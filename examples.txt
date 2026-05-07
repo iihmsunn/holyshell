@@ -19,3 +19,6 @@ char *str = "hello..."; set("str", str, sizeof(char)*strlen(str)+1);
 char *str = malloc(getlen("str")); get("str", str); printf("%s\n", str); free(str);
 
 
+void test1(int a){
+ printf("%d\n", a);
+}
