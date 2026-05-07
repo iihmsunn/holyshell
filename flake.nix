@@ -31,6 +31,10 @@
             gnumake
             readline
           ];
+          
+          shellHook = ''
+            export READLINEPATH="${readline.dev}"
+          '';
         };
       }
     );
