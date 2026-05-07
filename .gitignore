@@ -1,2 +1,3 @@
 .nix-profile*
 bin/**
+.hs_state/**

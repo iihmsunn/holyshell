@@ -1,4 +1,8 @@
 
 build:
 	mkdir -p bin
-	gcc hs.c -o bin/hs
+	gcc hs.c -lreadline -o bin/hs
+
+build_debug:
+	mkdir -p bin
+	gcc hs.c -lreadline -o bin/hs -O0 -g

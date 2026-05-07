@@ -9,9 +9,19 @@ typedef struct {
   int length;
 } var;
 
-typedef void* (*handle)(va_list args);
+typedef void* (*handle)(void** args);
 
 typedef struct {
   char *name;
   handle fn;
 } fn;
+
+typedef struct {
+  void *nextVarPointer;
+  var *variables;
+  fn *functions;
+  int varCounter;
+  int functionCounter;
+  int binaryCounter;
+  void* memory;
+} shellState;

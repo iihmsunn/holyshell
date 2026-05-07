@@ -1,0 +1,19 @@
+printf("hello!\n");
+
+void test(){ printf("hello!\n"); }
+
+callFunction("test", NULL);
+
+printFunctions_lib();
+
+_functions();
+
+int a = 5; set("a", &a, sizeof(int));
+int a = 25; set("a", &a, sizeof(int));
+int a = 35; set("a", &a, sizeof(int));
+int a; get("a", &a); printf("%d\n", a);
+
+char *str = "hello..."; set("str", str, sizeof(char)*strlen(str)+1);
+char *str = malloc(getlen("str")); get("str", str); printf("%s\n", str); free(str);
+
+

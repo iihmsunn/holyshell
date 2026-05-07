@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <regex.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 #include "hs.h"
 
 int runCommand(char *command, char *data) {
@@ -15,62 +17,79 @@ int runCommand(char *command, char *data) {
 
   pf = popen(command, "r");
   char *outputResult = fgets(data, 1024, pf);
-  if (!outputResult) {
-    fprintf(stderr, " Error: Failed to read command output \n"); 
-  }
-  
   int result = pclose(pf);
-  if (result != 0) {
-    fprintf(stderr, " Error: Failed to close command stream \n");
-  }
 
   return result;
 }
 
 int loadLib(char *path, char *fnName);
 
-int binaryCounter = 0;
-int varCounter = 0;
-int functionCounter = 0;
 char statePath[256];
 char CC[128];
-void* memory;
-var variables[INITIAL_VARIABLES];
-fn functions[INITIAL_VARIABLES];
-void *nextVarPointer;
+char commonLibCode[4096];
 regex_t functionNameRegex;
 
+shellState *s;
+
+
 void registerFunction(char *name, handle handle) {
-  functions[functionCounter] = (fn){
-    .name = name,
+  char *newName = malloc(strlen(name) * sizeof(char) + 1);
+  strcpy(newName, name);
+  s->functions[s->functionCounter] = (fn){
+    .name = newName,
     .fn = handle
   };
-  functionCounter++;
+  s->functionCounter++;
 }
 
-int compileC(char *code, int length, char *fnName) {
-  ssize_t n;
-  char buffer[512];
-  int codeFile;
-  char codeFileName[256];
-  char libFileName[256];
-  sprintf(codeFileName, "%s/%d.c", CC, binaryCounter);
-  sprintf(libFileName, "%s/%d.so", CC, binaryCounter);
-  codeFile = open(codeFileName, O_WRONLY);
+int compileC(char *code, char *fnName) {
+  char buffer[512] = "";
+  char wrapperStart[512] = "";
+  char wrapperEnd[512] = "";
 
-  ssize_t written = write(codeFile, code, length);
-  if (written == -1) {
-    fprintf(stderr, " Error: Failed to write to file \n");
+  if (fnName[0] == '\0') {
+    sprintf(wrapperStart, "void __temp__() {\n");
+    sprintf(wrapperEnd, "\n}\n");
   }
-  close(codeFile);
 
-  char command[1024];
-  int result = sprintf(command, "%s %s -o %s", CC, codeFileName, libFileName);
+  FILE *codeFile;
+  char codeFileName[512] = "";
+  char oFileName[512] = "";
+  char libFileName[512] = "";
+  sprintf(codeFileName, "%s/%d.c", statePath, s->binaryCounter);
+  sprintf(oFileName, "%s/%d.o", statePath, s->binaryCounter);
+  sprintf(libFileName, "%s/%d.so", statePath, s->binaryCounter);
+  codeFile = fopen(codeFileName, "w");
+  if (codeFile == (FILE*)-1) {
+    fprintf(stderr, " Error: Failed to create a file to write code \n");
+  }
 
-  loadLib(libFileName, fnName);
+  size_t written = fprintf(codeFile, "//common part:\n%s\n\n//main part:\n%s%s%s", commonLibCode, wrapperStart, code, wrapperEnd);
+  if (written == -1) {
+    fprintf(stderr, " Error: Failed to write code to file \n");
+  }
+  fclose(codeFile);
+
+  char oCommand[1500] = "";
+  char soCommand[1500] = "";
+  int oResult = sprintf(oCommand, "%s -c -fpic %s -o %s", CC, codeFileName, oFileName);
+  int soResult = sprintf(soCommand, "%s -shared %s -o %s", CC, oFileName, libFileName);
   
-  binaryCounter++;
-  return result;
+  char ccOutput[4096] = "";
+  int ccResult = runCommand(oCommand, ccOutput);
+  fprintf(stderr, "%s", ccOutput);
+  ccOutput[0] = '\0';
+  if (!ccResult) {
+    ccResult = runCommand(soCommand, ccOutput);
+    fprintf(stderr, "%s", ccOutput);
+  }
+
+  if (!ccResult) {
+    loadLib(libFileName, fnName);
+  }
+
+  s->binaryCounter++;
+  return oResult;
 }
 
 int loadLib(char *path, char *fnName) {
@@ -80,15 +99,32 @@ int loadLib(char *path, char *fnName) {
     fprintf(stderr, "Error: %s\n", dlerror());
     return EXIT_FAILURE;
   }
+
+  handle initHandle = dlsym(libHandle, "__init__");
+  if (!initHandle) {
+    fprintf(stderr, "Error initializing a library: %s\n", dlerror());
+    dlclose(libHandle);
+    return EXIT_FAILURE;
+  }
+
+  void *args[1];
+  args[0] = s;
+  initHandle(args);
+
+  handle fnHandle;
+  if (fnName[0] == '\0') {
+    fnHandle = dlsym(libHandle, "__temp__");
+  } else {
+    fnHandle = dlsym(libHandle, fnName);
+  }
   
-  handle fnHandle = dlsym(libHandle, fnName);
   if (!fnHandle) {
     fprintf(stderr, "Error: %s\n", dlerror());
     dlclose(libHandle);
     return EXIT_FAILURE;
   }
 
-  if (!strcmp(fnName, "__temp__")) {
+  if (fnName[0] == '\0') {
     fnHandle(NULL);
   } else {
     registerFunction(fnName, fnHandle);
@@ -99,10 +135,19 @@ int loadLib(char *path, char *fnName) {
 
 void printState() {
   var *var;
-  printf("Attempting to print variables as ints...:\n");
-  for (int i = 0; i < varCounter; i++) {
-    var = &variables[i];
-    printf("%s: %d\n", var->name, *(int*)var->pointer);
+  fprintf(stdout, "Attempting to print variables as ints...:\n");
+  for (int i = 0; i < s->varCounter; i++) {
+    var = &s->variables[i];
+    fprintf(stdout, "%s: %d\n", var->name, *(int*)var->pointer);
+  }
+}
+
+void printFunctions_host() {
+  fn *fn;
+  fprintf(stdout, "Attempting to print functions...:\n");
+  for (int i = 0; i < s->functionCounter; i++) {
+    fn = &s->functions[i];
+    fprintf(stdout, "%s\n", fn->name);
   }
 }
 
@@ -111,56 +156,88 @@ void getFunctionName(char* code, char* result) {
   regmatch_t *groups = malloc(ngroups * sizeof(regmatch_t));
   int execResult = regexec(&functionNameRegex, code, ngroups, groups, 0);
 
-  size_t nmatched;
-  for (nmatched = 0; nmatched < ngroups; nmatched++) {
-    regmatch_t *group = &groups[nmatched];
-    if (group->rm_so == (size_t)(-1)) {
-      break;
-    } else {
-      char substr[(group->rm_so - group->rm_eo)/8];
-      strncpy(code, code + group->rm_eo / 8, (group->rm_so - group->rm_eo)/8);
-      printf("%s", substr);
-      result = substr;
-    }
+  // size_t nmatched;
+  regmatch_t *group = &groups[1];
+  if (group->rm_so >= 0
+      && group->rm_so < group->rm_so < group->rm_eo
+  ) {
+      int length = group->rm_eo - group->rm_so; 
+      strncpy(result, code + group->rm_so, length);
   }
-  
+
   free(groups);
 }
 
 int main() {
-  // int regexResult = regcomp(&functionNameRegex, "([[:alnum:]_]+)[[:space:]]?\\(.+\\)[[:space:]]?\\{.*\\}", 0);
-  int regexResult = regcomp(&functionNameRegex, "([[:alnum:]_]+)[[:space:]]?\\(.*\\)[[:space:]]?{.*}", 0);
+  //init regexes
+  int regexResult = regcomp(&functionNameRegex, "([[:alnum:]_]+)[[:space:]]?\\(.*\\)[[:space:]]?\\{.*\\}", REG_EXTENDED);
   if (regexResult) {
-    printf("Regex compilation error\n");
+    fprintf(stderr, "Regex compilation error\n");
     return 1;
   }
-  
-  memory = malloc(INITIAL_MEMORY);
-  nextVarPointer = memory;
-  char command[1024];
-  
+
+  //init state
+  s = malloc(sizeof(shellState));
+  s->binaryCounter = 0;
+  s->functionCounter = 0;
+  s->functions = malloc(INITIAL_VARIABLES * sizeof(fn));
+  s->memory = malloc(INITIAL_MEMORY);
+  s->nextVarPointer = s->memory;
+  s->varCounter = 0;
+  s->variables = malloc(INITIAL_VARIABLES * sizeof(var));
+
+  //init shared lib code
+  FILE *sharedCodeFile;
+  int sharedCodeFileLength;
+  sharedCodeFile = fopen("lib.c", "r");
+  fseek(sharedCodeFile, 0, SEEK_END);
+  sharedCodeFileLength = ftell(sharedCodeFile);
+  fseek(sharedCodeFile, 0, SEEK_SET);
+  int codeReadRes = fread(commonLibCode, sharedCodeFileLength, 1, sharedCodeFile);
+
+  char *codeBlock = malloc(4000 * sizeof(char));
+  char *command;
+
   sprintf(statePath, ".hs_state");
   sprintf(CC, "gcc");
   mkdir(statePath, 0700);
 
-  while (1) {
-    int matched = scanf("%s", command);
-    printf("command: %s\n", command);
-    if (!strcmp(command, "_exit();")) {
-      printf("Exiting...\n");
+  while ((command = readline(">> ")) != NULL) {
+    int execute = 0;
+
+    if (strlen(command) > 0) {
+      add_history(command);
+    } else {
+      if (strlen(codeBlock) > 0) {
+        execute = 1;
+      }
+    }
+
+    if (!execute) {
+      strcat(codeBlock, command);
+
+      free(command);
+      continue;
+    }
+
+    if (!strcmp(codeBlock, "_exit();")) {
+      fprintf(stdout, "Exiting...\n");
       break;
     }
-    else if (!strcmp(command, "_state()")) {
+    else if (!strcmp(codeBlock, "_state();")) {
       printState();
     }
+    else if (!strcmp(codeBlock, "_functions();")) {
+      printFunctions_host();
+    }
+    else {
+        char fnName[128] = "";
+        getFunctionName(codeBlock, fnName);
 
-    char* fnName = malloc(sizeof(char) * 128);
-    getFunctionName(command, fnName);
-    if (fnName) {
-      printf("fnName: %s", fnName);
+        compileC(codeBlock, fnName);
     }
 
-    compileC(command, 1024, "__temp__");
+    codeBlock[0] = '\0';
   }
 
   return 0;

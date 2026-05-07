@@ -29,6 +29,7 @@
             gdb
             clang-tools
             gnumake
+            readline
           ];
         };
       }

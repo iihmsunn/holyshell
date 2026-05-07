@@ -7,10 +7,10 @@
     "label": "Debug native binary",
     "build": {
       "command": "make",
-      "args": ["build", "-j12"],
+      "args": ["build_debug", "-j12"],
       "cwd": "$ZED_WORKTREE_ROOT",
     },
-    "program": "$ZED_WORKTREE_ROOT/hs",
+    "program": "$ZED_WORKTREE_ROOT/bin/hs",
     "request": "launch",
     "adapter": "GDB",
   },
