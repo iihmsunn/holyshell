@@ -30,6 +30,7 @@
             clang-tools
             gnumake
             readline
+            bashInteractive
           ];
           
           shellHook = ''

@@ -3,7 +3,7 @@
 #define INITIAL_VARIABLES 128
 #define INITIAL_MEMORY 1048576
 
-typedef struct {
+typedef struct var {
   char *name;
   void *pointer;
   int length;
@@ -11,12 +11,12 @@ typedef struct {
 
 typedef void* (*handle)(void** args);
 
-typedef struct {
+typedef struct fn {
   char *name;
   handle fn;
 } fn;
 
-typedef struct {
+typedef struct shellState {
   void *nextVarPointer;
   var *variables;
   fn *functions;
@@ -25,3 +25,10 @@ typedef struct {
   int binaryCounter;
   void* memory;
 } shellState;
+
+typedef struct shellApi {
+  void (*set)(shellState *, char *, void *, int);
+  void (*get)(shellState *, char *, void *);
+  int (*getlen)(shellState *, char *);
+  void *(*callFunction)(shellState *, char*, void**);
+} shellApi;

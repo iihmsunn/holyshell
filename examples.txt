@@ -1,6 +1,8 @@
 printf("hello!\n");
 
-void test(){ printf("hello!\n"); }
+void test(){ 
+    printf("hello!\n"); 
+}
 
 callFunction("test", NULL);
 

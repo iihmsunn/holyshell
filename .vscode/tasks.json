@@ -5,7 +5,9 @@
             "label": "build",
             "command": "make",
             "args": [
-                "build_debug"
+                "build_debug",
+                "-j",
+                "12"
             ],
             "options": {
                 "cwd": "${fileDirname}"
