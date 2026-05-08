@@ -381,13 +381,6 @@ void getVariables(char *code, int global) {
     var->isGlobal = global;
     var->declared = 1;
 
-    for (int i = 0; i < strlen(var->type); i++) {
-      if (var->type[i] == '*') {
-        var->isPointer = 1;
-        break;
-      }
-    }
-
     if (gArray->rm_so > -1) {
       var->isArray = 1;
       char* digits = malloc(sizeof(char) * (gArray->rm_eo - gArray->rm_so));
@@ -396,6 +389,15 @@ void getVariables(char *code, int global) {
       free(digits);
     } else {
       var->arrayLength = 1;
+    }
+
+    if (!var->isArray) {
+      for (int i = 0; i < strlen(var->type); i++) {
+        if (var->type[i] == '*') {
+          var->isPointer = 1;
+          break;
+        }
+      }
     }
 
     offset = match->rm_eo + offset + 1;
