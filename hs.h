@@ -2,33 +2,34 @@
 #include <stdio.h>
 #define INITIAL_VARIABLES 128
 #define INITIAL_MEMORY 1048576
+#define HEADER
+#define GLOBAL
 
 typedef struct var {
-  char *name;
+  char name[32];
   void *pointer;
   int length;
+  char type[16];
+  int isPointer;
+  int isArray;
+  int arrayLength;
+  int isGlobal;
 } var;
 
 typedef void* (*handle)(void** args);
 
-typedef struct fn {
-  char *name;
-  handle fn;
-} fn;
-
 typedef struct shellState {
   void *nextVarPointer;
-  var *variables;
-  fn *functions;
+  var variables[INITIAL_VARIABLES];
   int varCounter;
-  int functionCounter;
   int binaryCounter;
-  void* memory;
+  int headerBlocksCounter;
+  void *memory;
+  char *headerBlocks[INITIAL_VARIABLES];
 } shellState;
 
 typedef struct shellApi {
-  void (*set)(shellState *, char *, void *, int);
-  void (*get)(shellState *, char *, void *);
-  int (*getlen)(shellState *, char *);
-  void *(*callFunction)(shellState *, char*, void**);
+  void (*set)(char *, void *, int);
+  void (*get)(char *, void *);
+  int (*getlen)(char *);
 } shellApi;

@@ -7,50 +7,49 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dlfcn.h>
-#include <regex.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <regex.h>
 #include "hs.h"
 
-void get(shellState *st, char *name, void *pointer);
-int getlen(shellState *st, char *name);
-void set(shellState *st, char *name, void *pointer, int size);
-void* callFunction(shellState *st, char *name, void** args);
-void registerFunction(char *name, handle handle);
-int loadLib(char *path, char *fnName);
+void get(char *name, void *pointer);
+int getlen( char *name);
+void set(char *name, void *pointer, int size);
+int loadLib(char *path);
 void printState();
-void printFunctions_host();
-void getFunctionName(char* code, char* result);
-int compileC(char *code, char *fnName);
+int compileC(char *code);
+void getVariables(char *code, int global);
+regex_t declarationRegex;
+const char* declarationRegexString = "(^|\n)([[:alpha:]_]+[[:blank:]*]+)([[:alnum:]_]+)(\\[[[:digit:]]+\\])?";
 
 char statePath[256];
 char CC[128];
 char commonLibCode[4096];
-regex_t functionNameRegex;
+
+char headerCode[4096];
+char restoreVars[4096];
+char persistVars[4096];
+char globalVars[4096];
 
 shellState *s;
 shellApi *api;
 
 int main() {
   //init regexes
-  int regexResult = regcomp(&functionNameRegex, "([[:alnum:]_]+)[[:space:]]?\\(.*\\)[[:space:]]?\\{.*\\}", REG_EXTENDED);
+  int regexResult = regcomp(&declarationRegex, declarationRegexString, REG_EXTENDED);
   if (regexResult) {
     fprintf(stderr, "Regex compilation error\n");
     return 1;
   }
-
+  
   //init state
   s = malloc(sizeof(shellState));
   s->binaryCounter = 0;
-  s->functionCounter = 0;
-  s->functions = malloc(INITIAL_VARIABLES * sizeof(fn));
   s->memory = malloc(INITIAL_MEMORY);
   s->nextVarPointer = s->memory;
   s->varCounter = 0;
-  s->variables = malloc(INITIAL_VARIABLES * sizeof(var));
 
-  api = malloc(sizeof(api));
-  api->callFunction = callFunction;
+  api = malloc(sizeof(shellApi));
   api->get = get;
   api->getlen = getlen;
   api->set = set;
@@ -64,7 +63,7 @@ int main() {
   fseek(sharedCodeFile, 0, SEEK_SET);
   int codeReadRes = fread(commonLibCode, sharedCodeFileLength, 1, sharedCodeFile);
 
-  char *codeBlock = malloc(4000 * sizeof(char));
+  char codeBlock[4000] = "";
   char *command;
 
   sprintf(statePath, ".hs_state");
@@ -84,6 +83,7 @@ int main() {
 
     if (!execute) {
       strcat(codeBlock, command);
+      strcat(codeBlock, "\n");
 
       free(command);
       continue;
@@ -96,17 +96,12 @@ int main() {
     else if (!strcmp(codeBlock, "_state();")) {
       printState();
     }
-    else if (!strcmp(codeBlock, "_functions();")) {
-      printFunctions_host();
-    }
     else {
-        char fnName[128] = "";
-        getFunctionName(codeBlock, fnName);
-
-        compileC(codeBlock, fnName);
+        compileC(codeBlock);
     }
 
     codeBlock[0] = '\0';
+    free(command);
   }
 
   return 0;
@@ -122,32 +117,95 @@ int runCommand(char *command, char *data) {
   return result;
 }
 
-int compileC(char *code, char *fnName) {
+int compileC(char *code) {
   char buffer[512] = "";
   char wrapperStart[512] = "";
   char wrapperEnd[512] = "";
 
-  if (fnName[0] == '\0') {
-    sprintf(wrapperStart, "void __temp__() {\n");
-    sprintf(wrapperEnd, "\n}\n");
-  }
+  sprintf(wrapperStart, "void __temp__() {\n");
+  sprintf(wrapperEnd, "\n}\n");
 
   FILE *codeFile;
   char codeFileName[512] = "";
   char oFileName[512] = "";
   char libFileName[512] = "";
+  headerCode[0] = '\0';
+  restoreVars[0] = '\0';
+  persistVars[0] = '\0';
+  globalVars[0] = '\0';
   sprintf(codeFileName, "%s/%d.c", statePath, s->binaryCounter);
   sprintf(oFileName, "%s/%d.o", statePath, s->binaryCounter);
   sprintf(libFileName, "%s/%d.so", statePath, s->binaryCounter);
+
+  for (int i = 0; i < s->headerBlocksCounter; i++) {
+    strcat(headerCode, s->headerBlocks[i]);
+    strcat(headerCode, "\n");
+  }
+
+  var *var;
+  for (int i = 0; i < s->varCounter; i++) {
+    var = &s->variables[i];
+
+    //declare
+    if (!var->isGlobal) {
+      sprintf(restoreVars + strlen(restoreVars), "%s%s", var->type, var->name);
+      if (var->isArray) {
+        sprintf(restoreVars + strlen(restoreVars), "[%d]", var->arrayLength);
+      }
+      sprintf(restoreVars + strlen(restoreVars), ";\n");
+    } else {
+      sprintf(globalVars + strlen(globalVars), "%s%s", var->type, var->name);
+      if (var->isArray) {
+        sprintf(globalVars + strlen(globalVars), "[%d]", var->arrayLength);
+      }
+      sprintf(globalVars + strlen(globalVars), ";\n");
+    }
+
+    //restore value
+    if (var->isPointer) {
+      sprintf(restoreVars + strlen(restoreVars), 
+        "api->get(\"%s\", %s);\n", var->name, var->name);
+    } else {
+      sprintf(restoreVars + strlen(restoreVars), 
+        "api->get(\"%s\", &%s);\n", var->name, var->name);
+    }
+
+    //persist
+    if (var->isPointer) {
+      sprintf(persistVars + strlen(persistVars),
+        "api->set(\"%s\", %s, sizeof(%s)*%d);\n", var->name, var->name, var->type, var->arrayLength);
+    } else {
+      sprintf(persistVars + strlen(persistVars), 
+        "api->set(\"%s\", &%s, sizeof(%s)*%d);\n", var->name, var->name, var->type, var->arrayLength);
+    }
+  }
+
   codeFile = fopen(codeFileName, "w");
   if (codeFile == (FILE*)-1) {
     fprintf(stderr, " Error: Failed to create a file to write code \n");
   }
 
-  size_t written = fprintf(codeFile, "//common part:\n%s\n\n//main part:\n%s%s%s", commonLibCode, wrapperStart, code, wrapperEnd);
+  const char *template =
+    "//common part:\n"
+    "%s\n\n"
+    "//global variables:\n"
+    "%s\n\n"
+    "//header part:\n"
+    "%s\n\n"
+    "%s" //wrapper opener
+    "//restoring variables:\n"
+    "%s\n\n"
+    "//main part:\n"
+    "%s\n\n" //code
+    "//persisting variables:\n"
+    "%s\n\n"
+    "%s"; //wrapper closer
+
+  size_t written = fprintf(codeFile, template, commonLibCode, globalVars, headerCode, wrapperStart, restoreVars, code, persistVars, wrapperEnd);
   if (written == -1) {
     fprintf(stderr, " Error: Failed to write code to file \n");
   }
+
   fclose(codeFile);
 
   char oCommand[1500] = "";
@@ -164,15 +222,31 @@ int compileC(char *code, char *fnName) {
     fprintf(stderr, "%s", ccOutput);
   }
 
+  int isHeaderBlock = strncmp("HEADER\n", code, 7) == 0;
+  int isGlobalBlock = strncmp("GLOBAL\n", code, 7) == 0;
+
   if (!ccResult) {
-    loadLib(libFileName, fnName);
+
+    if (isHeaderBlock) {
+      //don't run anything but append the code to header blocks
+      char *block = malloc(sizeof(char)*strlen(code) + 1);
+      strcpy(block, code);
+      s->headerBlocks[s->headerBlocksCounter++] = block;
+    } else {
+      //extract variables and run the code
+      if (!isHeaderBlock) {
+        getVariables(code, isGlobalBlock);
+      }
+      loadLib(libFileName);
+    }
   }
 
   s->binaryCounter++;
+  
   return oResult;
 }
 
-int loadLib(char *path, char *fnName) {
+int loadLib(char *path) {
   void *libHandle = dlopen(path, RTLD_LAZY);
 
   if (!libHandle) {
@@ -187,17 +261,11 @@ int loadLib(char *path, char *fnName) {
     return EXIT_FAILURE;
   }
 
-  void *args[2];
-  args[0] = s;
-  args[1] = api;
+  void *args[1] = { api };
   initHandle(args);
 
   handle fnHandle;
-  if (fnName[0] == '\0') {
-    fnHandle = dlsym(libHandle, "__temp__");
-  } else {
-    fnHandle = dlsym(libHandle, fnName);
-  }
+  fnHandle = dlsym(libHandle, "__temp__");
   
   if (!fnHandle) {
     fprintf(stderr, "Error: %s\n", dlerror());
@@ -205,23 +273,9 @@ int loadLib(char *path, char *fnName) {
     return EXIT_FAILURE;
   }
 
-  if (fnName[0] == '\0') {
-    fnHandle(NULL);
-  } else {
-    registerFunction(fnName, fnHandle);
-  }
+  fnHandle(NULL);
 
   return 0;
-}
-
-void registerFunction(char *name, handle handle) {
-  char *newName = malloc(strlen(name) * sizeof(char) + 1);
-  strcpy(newName, name);
-  s->functions[s->functionCounter] = (fn){
-    .name = newName,
-    .fn = handle
-  };
-  s->functionCounter++;
 }
 
 void printState() {
@@ -233,62 +287,45 @@ void printState() {
   }
 }
 
-void printFunctions_host() {
-  fn *fn;
-  fprintf(stdout, "Attempting to print functions...:\n");
-  for (int i = 0; i < s->functionCounter; i++) {
-    fn = &s->functions[i];
-    fprintf(stdout, "%s\n", fn->name);
-  }
-}
+void set(char *name, void *pointer, int size) {
+  if (pointer == NULL) return;
 
-void getFunctionName(char* code, char* result) {
-  size_t ngroups = functionNameRegex.re_nsub + 1;
-  regmatch_t *groups = malloc(ngroups * sizeof(regmatch_t));
-  int execResult = regexec(&functionNameRegex, code, ngroups, groups, 0);
-
-  // size_t nmatched;
-  regmatch_t *group = &groups[1];
-  if (group->rm_so >= 0
-      && group->rm_so < group->rm_so < group->rm_eo
-  ) {
-      int length = group->rm_eo - group->rm_so; 
-      strncpy(result, code + group->rm_so, length);
+  int index = -1;
+  for (int i = 0; i < s->varCounter; i++) {
+    if (!strcmp(s->variables[i].name, name)) {
+      index = i;
+      break;
+    }
   }
 
-  free(groups);
+  if (index == -1) return;
+
+  var *var = &s->variables[index];
+  if (var->pointer == NULL) {
+    var->pointer = s->nextVarPointer;
+    s->nextVarPointer = s->nextVarPointer + size;
+  }
+  
+  memcpy(var->pointer, pointer, size);
+  var->length = size;
 }
 
-void set(shellState *st, char *name, void *pointer, int size) {
-  memcpy(st->nextVarPointer, pointer, size);
-  char *newName = malloc(strlen(name) * sizeof(char) + 1);
-  strcpy(newName, name);
+void get(char *name, void *pointer) {
+  if (pointer == NULL) return;
 
-  st->variables[st->varCounter] = (var){
-    .length = size,
-    .name = newName,
-    .pointer = st->nextVarPointer 
-  };
-
-  st->nextVarPointer = st->nextVarPointer + size;
-
-  st->varCounter++;
-}
-
-void get(shellState *st, char *name, void *pointer) {
   var *var;
-  for (int i = 0; i < st->varCounter; i++) {
-    var = &st->variables[i];
+  for (int i = 0; i < s->varCounter; i++) {
+    var = &s->variables[i];
     if (!strcmp(var->name, name)) {
       memcpy(pointer, var->pointer, var->length);
     }
   }
 }
 
-int getlen(shellState *st, char *name) {
+int getlen(char *name) {
   var *var;
-  for (int i = 0; i < st->varCounter; i++) {
-    var = &st->variables[i];
+  for (int i = 0; i < s->varCounter; i++) {
+    var = &s->variables[i];
     if (!strcmp(var->name, name)) {
       return var->length;
     }
@@ -297,14 +334,46 @@ int getlen(shellState *st, char *name) {
   return 0;
 }
 
-void* callFunction(shellState *st, char *name, void** args) {
-  fn *fn;
-  for (int i = 0; i < st->functionCounter; i++) {
-    fn = &st->functions[i];
-    if (!strcmp(fn->name, name)) {
-      return fn->fn(args);
-    }
-  }
+void getVariables(char *code, int global) {
+  int offset = 0;
+  size_t ngroups = declarationRegex.re_nsub + 1;
+  regmatch_t *groups = malloc(ngroups * sizeof(regmatch_t));
 
-  return NULL;
+  while (1) {
+    // "^([[:alpha:]_]+(?=[[:space:]*])[[:space:]]*[*]?[[:space:]]*)([[:alnum:]_]+)(\\[[[:digit:]]+\\])?"
+    int execResult = regexec(&declarationRegex, code + offset, ngroups, groups, 0);
+    if (execResult != 0) break;
+
+    regmatch_t *match = &groups[0];
+    regmatch_t *gType = &groups[2];
+    regmatch_t *gName = &groups[3];
+    regmatch_t *gArray = &groups[4];
+
+    var *var = &s->variables[s->varCounter++];
+    strncpy(var->name, code + gName->rm_so + offset, gName->rm_eo - gName->rm_so);
+    strncpy(var->type, code + gType->rm_so + offset, gType->rm_eo - gType->rm_so);
+
+    var->isGlobal = global;
+
+    for (int i = 0; i < strlen(var->type); i++) {
+      if (var->type[i] == '*') {
+        var->isPointer = 1;
+        break;
+      }
+    }
+
+    if (gArray->rm_so > -1) {
+      var->isArray = 1;
+      char* digits = malloc(sizeof(char) * (gArray->rm_eo - gArray->rm_so));
+      strncpy(digits, code + gArray-> rm_so + offset + 1, gArray->rm_eo - gArray->rm_so - 1);
+      var->arrayLength = atoi(digits);
+      free(digits);
+    } else {
+      var->arrayLength = 1;
+    }
+
+    offset = match->rm_eo + offset + 1;
+  }
+  
+  free(groups);  
 }
