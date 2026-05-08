@@ -8,12 +8,14 @@
 typedef struct var {
   char name[32];
   void *pointer;
+  void *externalPointer;
   int length;
   char type[16];
   int isPointer;
   int isArray;
   int arrayLength;
   int isGlobal;
+  int declared;
 } var;
 
 typedef void* (*handle)(void** args);
@@ -31,5 +33,6 @@ typedef struct shellState {
 typedef struct shellApi {
   void (*set)(char *, void *, int);
   void (*get)(char *, void *);
+  void *(*getPointer)(char *);
   int (*getlen)(char *);
 } shellApi;

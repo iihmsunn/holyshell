@@ -13,7 +13,8 @@
 #include "hs.h"
 
 void get(char *name, void *pointer);
-int getlen( char *name);
+void* getPointer(char *name);
+int getlen(char *name);
 void set(char *name, void *pointer, int size);
 int loadLib(char *path);
 void printState();
@@ -51,6 +52,7 @@ int main() {
 
   api = malloc(sizeof(shellApi));
   api->get = get;
+  api->getPointer = getPointer;
   api->getlen = getlen;
   api->set = set;
 
@@ -118,6 +120,13 @@ int runCommand(char *command, char *data) {
 }
 
 int compileC(char *code) {
+  int isHeaderBlock = strncmp("HEADER\n", code, 7) == 0;
+  int isGlobalBlock = strncmp("GLOBAL\n", code, 7) == 0;
+
+  if (!isHeaderBlock) {
+    getVariables(code, isGlobalBlock);
+  }
+
   char buffer[512] = "";
   char wrapperStart[512] = "";
   char wrapperEnd[512] = "";
@@ -145,29 +154,33 @@ int compileC(char *code) {
   var *var;
   for (int i = 0; i < s->varCounter; i++) {
     var = &s->variables[i];
-
-    //declare
-    if (!var->isGlobal) {
-      sprintf(restoreVars + strlen(restoreVars), "%s%s", var->type, var->name);
-      if (var->isArray) {
-        sprintf(restoreVars + strlen(restoreVars), "[%d]", var->arrayLength);
+    
+    if (!var->declared) {
+      //declare
+      if (!var->isGlobal) {
+        sprintf(restoreVars + strlen(restoreVars), "%s%s", var->type, var->name);
+        if (var->isArray) {
+          sprintf(restoreVars + strlen(restoreVars), "[%d]", var->arrayLength);
+        }
+        sprintf(restoreVars + strlen(restoreVars), ";\n");
+      } else {
+        sprintf(globalVars + strlen(globalVars), "%s%s", var->type, var->name);
+        if (var->isArray) {
+          sprintf(globalVars + strlen(globalVars), "[%d]", var->arrayLength);
+        }
+        sprintf(globalVars + strlen(globalVars), ";\n");
       }
-      sprintf(restoreVars + strlen(restoreVars), ";\n");
-    } else {
-      sprintf(globalVars + strlen(globalVars), "%s%s", var->type, var->name);
-      if (var->isArray) {
-        sprintf(globalVars + strlen(globalVars), "[%d]", var->arrayLength);
-      }
-      sprintf(globalVars + strlen(globalVars), ";\n");
-    }
 
-    //restore value
-    if (var->isPointer) {
-      sprintf(restoreVars + strlen(restoreVars), 
-        "api->get(\"%s\", %s);\n", var->name, var->name);
+      //restore value
+      if (var->isPointer) {
+        sprintf(restoreVars + strlen(restoreVars), 
+          "%s = api->getPointer(\"%s\");\n", var->name, var->name);
+      } else {
+        sprintf(restoreVars + strlen(restoreVars), 
+          "api->get(\"%s\", &%s);\n", var->name, var->name);
+      }
     } else {
-      sprintf(restoreVars + strlen(restoreVars), 
-        "api->get(\"%s\", &%s);\n", var->name, var->name);
+      var->declared = 0;
     }
 
     //persist
@@ -222,9 +235,6 @@ int compileC(char *code) {
     fprintf(stderr, "%s", ccOutput);
   }
 
-  int isHeaderBlock = strncmp("HEADER\n", code, 7) == 0;
-  int isGlobalBlock = strncmp("GLOBAL\n", code, 7) == 0;
-
   if (!ccResult) {
 
     if (isHeaderBlock) {
@@ -234,9 +244,7 @@ int compileC(char *code) {
       s->headerBlocks[s->headerBlocksCounter++] = block;
     } else {
       //extract variables and run the code
-      if (!isHeaderBlock) {
-        getVariables(code, isGlobalBlock);
-      }
+      
       loadLib(libFileName);
     }
   }
@@ -306,7 +314,12 @@ void set(char *name, void *pointer, int size) {
     s->nextVarPointer = s->nextVarPointer + size;
   }
   
-  memcpy(var->pointer, pointer, size);
+  if (!var->isPointer) {
+    memcpy(var->pointer, pointer, size);
+  } else {
+    var->externalPointer = pointer;
+  }
+
   var->length = size;
 }
 
@@ -320,6 +333,18 @@ void get(char *name, void *pointer) {
       memcpy(pointer, var->pointer, var->length);
     }
   }
+}
+
+void* getPointer(char *name) {
+  var *var;
+  for (int i = 0; i < s->varCounter; i++) {
+    var = &s->variables[i];
+    if (!strcmp(var->name, name)) {
+      return var->externalPointer;
+    }
+  }
+
+  return NULL;
 }
 
 int getlen(char *name) {
@@ -354,6 +379,7 @@ void getVariables(char *code, int global) {
     strncpy(var->type, code + gType->rm_so + offset, gType->rm_eo - gType->rm_so);
 
     var->isGlobal = global;
+    var->declared = 1;
 
     for (int i = 0; i < strlen(var->type); i++) {
       if (var->type[i] == '*') {

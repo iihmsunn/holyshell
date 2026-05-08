@@ -22,3 +22,7 @@ char *str = malloc(getlen("str")); get("str", str); printf("%s\n", str); free(st
 void test1(int a){
  printf("%d\n", a);
 }
+
+int *a = malloc(sizeof(int));
+
+*a = 25;
